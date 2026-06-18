@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <rbus/rbus.h>
 #include "cpeabs.h"
+#include <cjson/cJSON.h>
 /*----------------------------------------------------------------------------*/
 /*                                   Macros                                   */
 /*----------------------------------------------------------------------------*/
@@ -64,6 +65,7 @@
 
 #define WEBCFG_URL_PARAM "Device.X_RDK_WebConfig.URL"
 #define WEBCFG_PARAM_SUPPLEMENTARY_SERVICE   "Device.X_RDK_WebConfig.SupplementaryServiceUrls."
+#define WEBCFG_SUPPLEMENTARY_TELEMETRY_PARAM "Device.X_RDK_WebConfig.SupplementaryServiceUrls.Telemetry"
 #define SYSTEM_READY_PARM "Device.CR.SystemReady"
 
 #ifdef FEATURE_SUPPORT_MQTTCM
@@ -77,6 +79,7 @@
 #if defined(_ONESTACK_PRODUCT_REQ_)
 #define DEVICE_MODE "Device.DeviceInfo.X_RDKCENTRAL-COM_Syndication.DeviceMode"
 #endif
+#define ETC_PARTNERS_DEFAULTS_FILE   "/etc/partners_defaults.json"
 
 /*----------------------------------------------------------------------------*/
 /*                               Data Structures                              */
@@ -339,30 +342,163 @@ bool isRbusEnabled()
 	return isRbus;
 }
 
+/**
+ * Read a webconfig URL parameter from /etc/partners_defaults.json for the active partner ID.
+ * Returns 0 on success and copies value into pString, -1 on failure.
+ */
+static int getWebcfgUrlFromEtcPartnerDefaults(const char *paramName, char *pString, size_t pStringSize)
+{
+    FILE *fileRead = NULL;
+    char *data = NULL;
+    cJSON *json = NULL;
+    cJSON *partnerObj = NULL;
+    cJSON *paramObj = NULL;
+    long len = 0;
+    char *partnerId = NULL;
+
+    if (paramName == NULL || pString == NULL || pStringSize == 0)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Invalid input parameters\n");
+        return -1;
+    }
+
+    partnerId = getPartnerID();
+    if (partnerId == NULL || partnerId[0] == '\0')
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Partner ID is NULL or empty\n");
+        if (partnerId != NULL)
+        {
+            CPEABS_FREE(partnerId);
+        }
+        return -1;
+    }
+
+    CpeabsInfo("getWebcfgUrlFromEtcPartnerDefaults: Looking up param '%s' for partner '%s' in %s\n",
+            paramName, partnerId, ETC_PARTNERS_DEFAULTS_FILE);
+
+    fileRead = fopen(ETC_PARTNERS_DEFAULTS_FILE, "r");
+    if (fileRead == NULL)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Failed to open %s\n", ETC_PARTNERS_DEFAULTS_FILE);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+
+    fseek(fileRead, 0, SEEK_END);
+    len = ftell(fileRead);
+    fseek(fileRead, 0, SEEK_SET);
+
+    if (len <= 0)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Invalid file length\n");
+        fclose(fileRead);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+
+    data = (char *)malloc(sizeof(char) * (len + 1));
+    if (data == NULL)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Failed to allocate memory\n");
+        fclose(fileRead);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+
+    memset(data, 0, (sizeof(char) * (len + 1)));
+    size_t bytesRead = fread(data, 1, len, fileRead);
+    fclose(fileRead);
+
+    if (bytesRead == 0)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Failed to read file\n");
+        CPEABS_FREE(data);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+    data[bytesRead] = '\0';
+
+    json = cJSON_Parse(data);
+    if (json == NULL)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Failed to parse JSON\n");
+        CPEABS_FREE(data);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+
+    partnerObj = cJSON_GetObjectItem(json, partnerId);
+    if (partnerObj == NULL)
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Partner '%s' not found in JSON\n", partnerId);
+        cJSON_Delete(json);
+        CPEABS_FREE(data);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+
+    paramObj = cJSON_GetObjectItem(partnerObj, paramName);
+    if (paramObj == NULL || !cJSON_IsString(paramObj) || paramObj->valuestring == NULL || paramObj->valuestring[0] == '\0')
+    {
+        CpeabsError("getWebcfgUrlFromEtcPartnerDefaults: Param '%s' not found or empty for partner '%s'\n",
+                paramName, partnerId);
+        cJSON_Delete(json);
+        CPEABS_FREE(data);
+        CPEABS_FREE(partnerId);
+        return -1;
+    }
+
+    cpeabStrncpy(pString, paramObj->valuestring, pStringSize);
+    CpeabsInfo("getWebcfgUrlFromEtcPartnerDefaults: Retrieved %s = %s for partner %s\n",
+            paramName, pString, partnerId);
+
+    cJSON_Delete(json);
+    CPEABS_FREE(data);
+    CPEABS_FREE(partnerId);
+    return 0;
+}
+
 int Get_Webconfig_URL( char *pString)
 {
-	char *tempUrl = NULL;
-	int retPsmGet = 0;
-	if(isRbusEnabled())
-	{
-		retPsmGet = rbus_GetValueFromDB( WEBCFG_URL_PARAM, &tempUrl);
-		CpeabsDebug("Get_Webconfig_URL. retPsmGet %d tempUrl %s\n", retPsmGet, tempUrl);
-		if (retPsmGet == RBUS_ERROR_SUCCESS)
+    char *tempUrl = NULL;
+    int retPsmGet = 0;
+    if(isRbusEnabled())
+    {
+        retPsmGet = rbus_GetValueFromDB( WEBCFG_URL_PARAM, &tempUrl);
+        CpeabsDebug("Get_Webconfig_URL. retPsmGet %d tempUrl %s\n", retPsmGet, tempUrl);
+        if (retPsmGet == RBUS_ERROR_SUCCESS)
+        {
+            if(tempUrl != NULL && tempUrl[0] != '\0')
+            {
+                cpeabStrncpy(pString, tempUrl, strlen(tempUrl)+1);
+                CPEABS_FREE(tempUrl);
+                CpeabsDebug("Get_Webconfig_URL. Valid URL from nvram: %s\n", pString);
+            }
+            else
+            {
+                CpeabsError("Get_Webconfig_URL. URL is empty, falling back to default configuration\n");
+                if (tempUrl != NULL)
                 {
-			if(tempUrl !=NULL)
-			{
-				cpeabStrncpy(pString, tempUrl, strlen(tempUrl)+1);
-				CPEABS_FREE(tempUrl);
-			}
-			CpeabsDebug("Get_Webconfig_URL. pString %s\n", pString);
-		}
-		else
-                {
-                        CpeabsError("psm_get failed ret %d for parameter %s\n", retPsmGet, WEBCFG_URL_PARAM);
+                    CPEABS_FREE(tempUrl);
                 }
-	}
-	CpeabsDebug("Get_Webconfig_URL strong fn from lib\n");
-	return retPsmGet;
+                if (getWebcfgUrlFromEtcPartnerDefaults(WEBCFG_URL_PARAM, pString, MAX_BUFF_SIZE) != 0)
+                {
+                    CpeabsError("Get_Webconfig_URL. Fallback to default also failed\n");
+                }
+            }
+            CpeabsDebug("Get_Webconfig_URL. pString %s\n", pString);
+        }
+        else
+        {
+            CpeabsError("Get_Webconfig_URL: PSM get failed (ret %d) for parameter %s, falling back to default\n", retPsmGet, WEBCFG_URL_PARAM);
+            if (getWebcfgUrlFromEtcPartnerDefaults(WEBCFG_URL_PARAM, pString, MAX_BUFF_SIZE) == 0)
+            {
+                retPsmGet = 0;
+            }
+        }
+    }
+    CpeabsDebug("Get_Webconfig_URL strong fn from lib\n");
+    return retPsmGet;
 }
 
 int Set_Webconfig_URL( char *pString)
@@ -387,35 +523,52 @@ int Set_Webconfig_URL( char *pString)
 
 int Get_Supplementary_URL( char *name, char *pString)
 {
-	char *tempUrl = NULL;
-	int retPsmGet = 0;
-	if(isRbusEnabled())
-	{
-		char *tempParam = (char *) malloc (sizeof(char)*MAX_BUFF_SIZE);
-		if(tempParam !=NULL)
-		{
-			snprintf(tempParam, MAX_BUFF_SIZE, "%s%s", WEBCFG_PARAM_SUPPLEMENTARY_SERVICE, name);
-			CpeabsDebug("tempParam is %s\n", tempParam);
-			retPsmGet = rbus_GetValueFromDB( tempParam, &tempUrl);
-			if (retPsmGet == RBUS_ERROR_SUCCESS)
-			{
-				CpeabsDebug("Get_Supplementary_URL. retPsmGet %d tempUrl %s\n", retPsmGet, tempUrl);
-				if(tempUrl !=NULL)
-				{
-					cpeabStrncpy(pString, tempUrl, strlen(tempUrl)+1);
-					CPEABS_FREE(tempUrl);
-				}
-				CpeabsDebug("Get_Supplementary_URL. pString %s\n", pString);
-				CPEABS_FREE(tempParam);
-			}
-			else
-			{
-				CpeabsError("psm_get failed ret %d for parameter %s\n", retPsmGet, tempParam);
-				CPEABS_FREE(tempParam);
-			}
-		}
-	}
-	return retPsmGet;
+    char *tempUrl = NULL;
+    int retPsmGet = 0;
+    if(isRbusEnabled())
+    {
+        char *tempParam = (char *) malloc (sizeof(char)*MAX_BUFF_SIZE);
+        if(tempParam !=NULL)
+        {
+            snprintf(tempParam, MAX_BUFF_SIZE, "%s%s", WEBCFG_PARAM_SUPPLEMENTARY_SERVICE, name);
+            CpeabsDebug("tempParam is %s\n", tempParam);
+            retPsmGet = rbus_GetValueFromDB( tempParam, &tempUrl);
+            if (retPsmGet == RBUS_ERROR_SUCCESS)
+            {
+                CpeabsDebug("Get_Supplementary_URL. retPsmGet %d tempUrl %s\n", retPsmGet, tempUrl);
+                if(tempUrl != NULL && tempUrl[0] != '\0')
+                {
+                    cpeabStrncpy(pString, tempUrl, strlen(tempUrl)+1);
+                    CPEABS_FREE(tempUrl);
+                    CpeabsDebug("Get_Supplementary_URL. Valid URL: %s\n", pString);
+                }
+                else
+                {
+                    CpeabsError("Get_Supplementary_URL: URL is empty for %s, using default configuration\n", tempParam);
+                    if (tempUrl != NULL)
+                    {
+                        CPEABS_FREE(tempUrl);
+                    }
+                    if (getWebcfgUrlFromEtcPartnerDefaults(WEBCFG_SUPPLEMENTARY_TELEMETRY_PARAM, pString, MAX_BUFF_SIZE) != 0)
+                    {
+                        CpeabsError("Get_Supplementary_URL. Fallback to default also failed for %s\n", tempParam);
+                    }
+                }
+                CpeabsDebug("Get_Supplementary_URL. pString %s\n", pString);
+                CPEABS_FREE(tempParam);
+            }
+            else
+            {
+                CpeabsError("Get_Supplementary_URL: PSM get failed (ret %d) for parameter %s, falling back to default configuration\n", retPsmGet, tempParam);
+                if (getWebcfgUrlFromEtcPartnerDefaults(WEBCFG_SUPPLEMENTARY_TELEMETRY_PARAM, pString, MAX_BUFF_SIZE) == 0)
+                {
+                    retPsmGet = 0;
+                }
+                CPEABS_FREE(tempParam);
+            }
+        }
+    }
+    return retPsmGet;
 }
 
 int Set_Supplementary_URL( char *name, char *pString)
