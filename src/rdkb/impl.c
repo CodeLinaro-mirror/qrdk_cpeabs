@@ -477,7 +477,10 @@ int Get_Webconfig_URL( char *pString)
             else
             {
                 CpeabsError("Get_Webconfig_URL. URL is empty, falling back to default configuration\n");
-                CPEABS_FREE(tempUrl);
+                if (tempUrl != NULL)
+                {
+                    CPEABS_FREE(tempUrl);
+                }
                 if (getWebcfgUrlFromEtcPartnerDefaults(WEBCFG_URL_PARAM, pString, MAX_BUFF_SIZE) != 0)
                 {
                     CpeabsError("Get_Webconfig_URL. Fallback to default also failed\n");
@@ -542,7 +545,10 @@ int Get_Supplementary_URL( char *name, char *pString)
                 else
                 {
                     CpeabsError("Get_Supplementary_URL: URL is empty for %s, using default configuration\n", tempParam);
-                    CPEABS_FREE(tempUrl);
+                    if (tempUrl != NULL)
+                    {
+                        CPEABS_FREE(tempUrl);
+                    }
                     if (getWebcfgUrlFromEtcPartnerDefaults(WEBCFG_SUPPLEMENTARY_TELEMETRY_PARAM, pString, MAX_BUFF_SIZE) != 0)
                     {
                         CpeabsError("Get_Supplementary_URL. Fallback to default also failed for %s\n", tempParam);
